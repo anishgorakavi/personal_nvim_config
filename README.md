@@ -35,6 +35,17 @@ Neovim requires command names to start with a capital letter, so type `:Claude`,
 
 To add another language, add an entry to `lua/config/run.lua`.
 
+## Codex and Antigravity
+
+| Command                 | Does                                                          |
+|-------------------------|---------------------------------------------------------------|
+| `:Codex`                | Start OpenAI Codex CLI in a split on the right                |
+| `:Codex <prompt>`       | Start Codex CLI and send `<prompt>` as the first message      |
+| `:AGY`                  | Start Antigravity (`agy`) in a split on the right             |
+| `:AGY <prompt>`         | Start Antigravity and send `<prompt>` as the first message    |
+
+These run the `codex` and `agy` binaries from your PATH, so they must be installed. The commands are defined in `lua/config/agents.lua`.
+
 ## Automatic commits
 
 | Command                 | Does                                                              |
@@ -69,6 +80,7 @@ Every 30 minutes (configurable), Neovim checks the repo of the current directory
 | `<Space>cr`      | Rename symbol everywhere                |
 | `gd`             | Go to definition                        |
 | `K`              | Show docs for the thing under cursor    |
+| Mouse hover      | Rest the mouse on a symbol to show its docs (Rust, Python, Java) |
 | `<Ctrl>/`        | Toggle a terminal                       |
 | `<Space>cm`      | Mason: install/update language tools    |
 | `<Space>l`       | Lazy: plugin manager                    |
@@ -80,11 +92,12 @@ Every 30 minutes (configurable), Neovim checks the repo of the current directory
 - `i` enters insert mode, `<Esc>` leaves it.
 - `:w` saves, `:q` quits, `:wq` saves and quits. `:q!` quits without saving.
 - Movement: `h j k l` (or arrow keys), `w`/`b` by word, `0`/`$` start/end of line, `gg`/`G` top/bottom.
+- Option+Left and Option+Right move by word in normal and insert mode. Option+Backspace deletes the previous word in insert mode.
 - `u` undo, `<Ctrl>r` redo.
 
 ## Layout
 
 - `init.lua`: entry point.
 - `lazyvim.json`: which LazyVim extras are enabled (Java and Python). Use `:LazyExtras` to add more.
-- `lua/config/`: options, keymaps, autocmds, and the run command.
+- `lua/config/`: options, keymaps, autocmds, and the run command. Also the Codex/AGY commands (`agents.lua`) and mouse hover (`hover.lua`).
 - `lua/plugins/`: put your own plugins here (empty for now).
