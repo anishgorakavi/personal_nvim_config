@@ -16,3 +16,10 @@ require("config.claude").setup()
 require("config.autocommit").setup()
 -- :HotReload, see lua/config/reload.lua
 require("config.reload").setup()
+
+-- Move between words
+vim.keymap.set({ "n", "i" }, "<M-Left>", "<C-Left>")
+vim.keymap.set({ "n", "i" }, "<M-Right>", "<C-Right>")
+
+-- Delete previous word in insert mode
+vim.keymap.set("i", "<M-BS>", "<C-w>")
