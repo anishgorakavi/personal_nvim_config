@@ -12,24 +12,55 @@ local function package_of(file)
   end
 end
 
+-- Dependency JARs cached by javadeps.lua, as a classpath string ("" when absent).
+local function dependency_classpath(build_root)
+  local path = build_root .. "/.ferrisjdt/classpath.txt"
+  if vim.uv.fs_stat(path) == nil then
+    return ""
+  end
+  return table.concat(vim.fn.readfile(path), ":")
+end
+
+local function is_spring_boot_app(file)
+  for line in io.lines(file) do
+    if line:find("@SpringBootApplication", 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
 local runners = {
   python = function(file)
     return { "python3", "-u", file }
   end,
   -- Compile every sibling .java file first, so classes that reference each other resolve.
   -- Maven/Gradle layouts (src/main/java) compile the whole source root so packages work too.
+  -- Inside a Maven/Gradle project the cached dependency JARs go on the classpath, and a Spring
+  -- Boot app in the standard layout is started by the build tool so runtime-only JARs are included.
   java = function(file)
+    local build_root = vim.fs.root(file, { "pom.xml", "build.gradle", "build.gradle.kts" })
+    if build_root and file:find(build_root .. "/src/main/java/", 1, true) and is_spring_boot_app(file) then
+      local goal = vim.uv.fs_stat(build_root .. "/pom.xml")
+          and (vim.uv.fs_stat(build_root .. "/mvnw") and "./mvnw" or "mvn") .. " spring-boot:run"
+        or (vim.uv.fs_stat(build_root .. "/gradlew") and "./gradlew" or "gradle") .. " bootRun"
+      return { "sh", "-c", "cd " .. vim.fn.shellescape(build_root) .. " && " .. goal }
+    end
+    local deps = build_root and dependency_classpath(build_root) or ""
+    local javac_cp = deps ~= "" and (" -cp " .. vim.fn.shellescape(deps)) or ""
+    local resources = build_root and (build_root .. "/src/main/resources") or ""
+    local out = vim.fn.tempname()
     local name = vim.fn.fnamemodify(file, ":t:r")
     local pkg = package_of(file)
     local main_class = pkg and (pkg .. "." .. name) or name
     local source_root = file:match("^(.*/src/[^/]+/java)/")
     local find = source_root and "find . -name '*.java'" or "find . -maxdepth 1 -name '*.java'"
-    local out = vim.fn.tempname()
+    local runtime = out .. (resources ~= "" and (":" .. resources) or "") .. (deps ~= "" and (":" .. deps) or "")
     local script = table.concat({
       "cd " .. vim.fn.shellescape(source_root or vim.fs.dirname(file)),
       "mkdir -p " .. out,
-      find .. " -print0 | xargs -0 javac -d " .. out,
-      "java -cp " .. out .. " " .. main_class,
+      find .. " -print0 | xargs -0 javac" .. javac_cp .. " -d " .. out,
+      "java -cp " .. vim.fn.shellescape(runtime) .. " " .. main_class,
     }, " && ")
     return { "sh", "-c", script }
   end,

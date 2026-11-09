@@ -1,0 +1,17 @@
+{
+  "System.out.println (sout)": {
+    "prefix": "sout",
+    "body": ["System.out.println($1);"],
+    "description": "Print a line to standard output"
+  },
+  "System.err.println (serr)": {
+    "prefix": "serr",
+    "body": ["System.err.println($1);"],
+    "description": "Print a line to standard error"
+  },
+  "main method (psvm)": {
+    "prefix": "psvm",
+    "body": ["public static void main(String[] args) {", "\t$0", "}"],
+    "description": "public static void main(String[] args)"
+  }
+}
