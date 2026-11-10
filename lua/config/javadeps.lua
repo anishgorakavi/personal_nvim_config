@@ -15,30 +15,69 @@ local maven_output = "target/ferrisjdt-classpath.txt"
 local running = {}
 local attempted = {}
 
--- A Gradle init script that prints nothing and writes every module's JARs to
--- -Dferrisjdt.out. Resolving through sourceSets honours the Spring Boot BOM.
+-- A Gradle init script that prints nothing. Every project with the java plugin gets a task that
+-- resolves its own source sets (Gradle 9 forbids resolving another project's configurations from
+-- the root's task) and writes, under -Dferrisjdt.dir: the compile classpath JARs (.classpath), the
+-- existing Java source and generated-source directories (.sources), the files a source set excludes
+-- from compilation (.excluded), a JAR count per source set (.modules), the Java level the build
+-- asks for (.level), and anything that failed (.errors), so a module that lost its dependencies is visible rather than silent.
 local init_script = [[
-rootProject {
-  tasks.register('ferrisjdtClasspath') {
-    doLast {
-      def jars = new LinkedHashSet<String>()
-      rootProject.allprojects.each { p ->
-        def sets = p.extensions.findByName('sourceSets')
-        if (sets != null) {
-          sets.each { ss ->
-            try {
-              ss.compileClasspath.files.each { f ->
-                if (f.name.endsWith('.jar') && f.exists()) { jars << f.absolutePath }
-              }
-            } catch (Exception e) {
-              logger.warn("ferrisjdt: skipped " + p.path + ":" + ss.name + ": " + e.message)
+allprojects { p ->
+  p.plugins.withId('java') {
+    p.tasks.register('ferrisjdtProject') {
+      // When compileJava is also requested, read the directories after annotation processors ran.
+      mustRunAfter { p.tasks.matching { t -> t.name == 'compileJava' } }
+      doLast {
+        def jars = new LinkedHashSet<String>()
+        def sources = new LinkedHashSet<String>()
+        def excluded = new LinkedHashSet<String>()
+        def modules = []
+        def errors = []
+        def levels = []
+        try {
+          def ext = p.extensions.findByName('java')
+          def toolchain = ext?.toolchain?.languageVersion?.getOrNull()
+          if (toolchain != null) { levels << toolchain.asInt() }
+          else if (ext?.sourceCompatibility != null) { levels << ext.sourceCompatibility.majorVersion }
+          def release = p.tasks.findByName('compileJava')?.options?.release?.getOrNull()
+          if (release != null) { levels << release }
+        } catch (Exception e) {
+          errors << (p.path + " level: " + e.message)
+        }
+        p.sourceSets.each { ss ->
+          def count = 0
+          try {
+            ss.compileClasspath.files.each { f ->
+              if (f.name.endsWith('.jar') && f.exists()) { jars << f.absolutePath; count++ }
             }
+          } catch (Exception e) {
+            errors << (p.path + ":" + ss.name + " classpath: " + e.message)
           }
+          try {
+            (ss.java.srcDirs + ss.output.generatedSourcesDirs.files).each { d ->
+              if (d.isDirectory()) { sources << d.absolutePath }
+            }
+            // Files under a source directory that the build leaves out of compilation.
+            def included = ss.java.files as Set
+            ss.java.srcDirs.each { d ->
+              if (d.isDirectory()) {
+                p.fileTree(dir: d, include: '**/*.java').files.each { f ->
+                  if (!included.contains(f)) { excluded << f.absolutePath }
+                }
+              }
+            }
+          } catch (Exception e) {
+            errors << (p.path + ":" + ss.name + " sources: " + e.message)
+          }
+          modules << (p.path + ":" + ss.name + "\t" + count)
+        }
+        def dir = new File(System.getProperty('ferrisjdt.dir'))
+        dir.mkdirs()
+        def stem = p.path == ':' ? '_root' : p.path.substring(1).replace(':', '_')
+        [classpath: jars, sources: sources, excluded: excluded, modules: modules, errors: errors, level: levels].each { ext, lines ->
+          new File(dir, stem + '.' + ext).text = lines.isEmpty() ? '' : lines.join('\n') + '\n'
         }
       }
-      def out = new File(System.getProperty('ferrisjdt.out'))
-      out.parentFile.mkdirs()
-      out.text = jars.join('\n') + '\n'
     }
   }
 }
@@ -89,6 +128,51 @@ local function write_cache(root, jars)
   vim.fn.writefile(jars, root .. "/" .. cache_name)
 end
 
+-- Gradle also reports source and generated-source directories, excluded files and per-module JAR
+-- counts, one file set per project; a Maven resolve carries none, so stale copies are removed.
+-- Returns the failures Gradle reported.
+local function write_extras(root, out, tool)
+  local errors = {}
+  for _, name in ipairs({ "sources", "modules", "excluded" }) do
+    local target = root .. "/.ferrisjdt/" .. name .. ".txt"
+    if tool == "gradle" then
+      local seen, lines = {}, {}
+      for _, file in ipairs(vim.fn.glob(out .. "/*." .. name, true, true)) do
+        for _, line in ipairs(vim.fn.readfile(file)) do
+          if line ~= "" and not seen[line] then
+            seen[line] = true
+            lines[#lines + 1] = line
+          end
+        end
+      end
+      vim.fn.writefile(lines, target)
+    else
+      os.remove(target)
+    end
+  end
+  -- The highest Java level any project asks for, which the server uses as the source level.
+  local level_file = root .. "/.ferrisjdt/level.txt"
+  local level = 0
+  if tool == "gradle" then
+    for _, file in ipairs(vim.fn.glob(out .. "/*.level", true, true)) do
+      for _, line in ipairs(vim.fn.readfile(file)) do
+        level = math.max(level, tonumber((line:gsub("^1%.", ""))) or 0)
+      end
+    end
+  end
+  if level >= 5 then
+    vim.fn.writefile({ tostring(level) }, level_file)
+  else
+    os.remove(level_file)
+  end
+  if tool == "gradle" then
+    for _, file in ipairs(vim.fn.glob(out .. "/*.errors", true, true)) do
+      vim.list_extend(errors, vim.fn.readfile(file))
+    end
+  end
+  return errors
+end
+
 local function restart_server()
   for _, client in ipairs(vim.lsp.get_clients({ name = "ferrisjdt" })) do
     local bufs = vim.tbl_keys(client.attached_buffers)
@@ -118,12 +202,15 @@ local function resolve_command(root, out)
   end
   local init = vim.fn.stdpath("data") .. "/ferrisjdt-classpath.init.gradle"
   vim.fn.writefile(vim.split(init_script, "\n"), init)
-  local gradle = exists(root .. "/gradlew") and "./gradlew" or "gradle"
+  -- vim.g.javadeps_gradle pins a Gradle binary, for a project whose wrapper should not be run.
+  local gradle = vim.g.javadeps_gradle or (exists(root .. "/gradlew") and "./gradlew" or "gradle")
   if gradle == "gradle" and vim.fn.executable("gradle") ~= 1 then
     return nil
   end
   return {
-    gradle, "-q", "--console=plain", "-I", init, "-Dferrisjdt.out=" .. out, "ferrisjdtClasspath",
+    gradle, "-q", "--console=plain", "-I", init,
+    "-Dferrisjdt.dir=" .. out,
+    "ferrisjdtProject",
   },
     "gradle"
 end
@@ -133,7 +220,7 @@ local function output_files(root, tool, out)
   if tool == "maven" then
     return vim.fn.glob(root .. "/**/" .. maven_output, true, true)
   end
-  return exists(out) and { out } or {}
+  return vim.fn.glob(out .. "/*.classpath", true, true)
 end
 
 -- Parses Maven's colon-separated lines or Gradle's one-per-line output, across files.
@@ -175,11 +262,28 @@ function M.sync(root)
         return
       end
       local jars = read_jars(files)
-      for _, file in ipairs(files) do
-        os.remove(file)
+      -- Resolving nothing is a failure, not an empty project: keep the previous cache.
+      if #jars == 0 then
+        local tail = vim.trim((result.stderr or "") .. (result.stdout or ""))
+        notify(tool .. " resolved 0 dependency JARs; cache unchanged.\n" .. tail:sub(-400), vim.log.levels.ERROR)
+        return
+      end
+      if tool == "maven" then
+        for _, file in ipairs(files) do
+          os.remove(file)
+        end
       end
       write_cache(root, jars)
-      notify(("%s: %d dependency JARs cached; restarting server"):format(tool, #jars))
+      local errors = write_extras(root, out, tool)
+      -- `out` is a directory this run created under Neovim's own temp area; remove only that.
+      if tool == "gradle" and out:find(vim.fn.fnamemodify(vim.fn.tempname(), ":h:h"), 1, true) then
+        vim.fn.delete(out, "rf")
+      end
+      local message = ("%s: %d dependency JARs cached; restarting server"):format(tool, #jars)
+      if #errors > 0 then
+        message = message .. ("\n%d source sets could not be resolved, first: %s"):format(#errors, errors[1])
+      end
+      notify(message, #errors > 0 and vim.log.levels.WARN or vim.log.levels.INFO)
       restart_server()
     end)
   end)

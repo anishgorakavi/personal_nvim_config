@@ -102,6 +102,8 @@ Open a Java file in a project with a `pom.xml` or `build.gradle` and FerrisJDT g
 | `:JavaDepsSync`   | Resolve dependencies again, for example after editing the build file or when the first attempt failed |
 | `:JavaDepsStatus` | Show how many JARs are cached and whether the cache is stale |
 
+For Gradle, every module (and source set) is resolved by its own task, so a module cannot silently lose its dependencies; the Java level, source and generated-source directories, and files a source set excludes are reported too, and a sync that resolves no JARs is an error instead of an empty cache. Set `vim.g.javadeps_gradle` to a Gradle binary to use instead of the project's `gradlew`, for example when its wrapper has not been verified. Annotation-processor output (MapStruct, QueryDSL, a JPA metamodel, Micronaut) is indexed only after you have compiled the project once, because the server never runs the build.
+
 For a multi-module Maven project, every module's dependencies are collected into one cache in the project root, and FerrisJDT treats the parent project as the workspace even when you open a single module, so sibling modules' classes resolve. The code is in `lua/config/javadeps.lua`.
 
 ## Reloading the config
